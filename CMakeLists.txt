@@ -2,7 +2,8 @@
 
 cmake_minimum_required(VERSION 3.13)
 project(onnx2trt LANGUAGES CXX C)
-
+set(CMAKE_BUILD_TYPE Debug)
+set(TENSORRT_ROOT /usr/local/TensorRT-7.2.3.4)
 set(ONNX2TRT_ROOT ${PROJECT_SOURCE_DIR})
 # Set C++11 as standard for the whole project
 set(CMAKE_CXX_STANDARD  11)

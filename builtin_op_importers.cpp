@@ -94,6 +94,74 @@ bool registerBuiltinOpImporter(std::string op, NodeImporter const& importer)
     return inserted;
 }
 
+
+DEFINE_BUILTIN_OP_IMPORTER(NonMaxSuppression)
+
+                                                                                
+    // NodeImportResult importNonMaxSuppression(                                                                                       
+    //     IImporterContext* ctx, ::ONNX_NAMESPACE::NodeProto const& node, std::vector<TensorOrWeights>& inputs);         
+    // static const bool NonMaxSuppression_registered_builtin_op = registerBuiltinOpImporter("NonMaxSuppression", importNonMaxSuppression);                         
+    // IGNORE_UNUSED_GLOBAL(NonMaxSuppression_registered_builtin_op);                                                                  
+    // NodeImportResult importNonMaxSuppression(                                                                                       
+    //     IImporterContext* ctx, ::ONNX_NAMESPACE::NodeProto const& node, std::vector<TensorOrWeights>& inputs)
+
+{
+    std::vector<nvinfer1::ITensor*> tensors;
+    tensors.push_back(&convertToTensor(inputs.at(0), ctx)); // TODO
+    tensors.push_back(&convertToTensor(inputs.at(1), ctx));
+    // input[0].shape = [num_boxes, 4]
+    // input[1].shape = [num_boxes]
+
+    LOG_VERBOSE("call nms plugin: ");
+    const std::string pluginName = "NonMaxSuppressionDynamic_TRT";
+    // const std::string pluginName = "BatchedNMS_TRT";
+    const std::string pluginVersion = "1";
+
+    std::vector<nvinfer1::PluginField> f;
+    bool shareLocation = true;
+    int backgroundLabelId = -1;
+    int numClasses = 1;
+    int topK = tensors[1]->getDimensions().d[2];
+    // float iouThreshold = static_cast<float*>(inputs.at(2).weights().values)[0];
+    // float scoreThreshold = (node.input().size() > 3) ? static_cast<float*>(inputs.at(3).weights().values)[0] : 0.;
+    // int keepTopK = (node.input().size() > 4) ? static_cast<int*>(inputs.at(4).weights().values)[0] : tensors[1]->getDimensions().d[2];
+    int keepTopK = (node.input().size() > 4) ? static_cast<int*>(inputs.at(2).weights().values)[0] : tensors[1]->getDimensions().d[2];
+    float iouThreshold = static_cast<float*>(inputs.at(3).weights().values)[0];
+    float scoreThreshold = (node.input().size() > 3) ? static_cast<float*>(inputs.at(4).weights().values)[0] : 0.;
+    
+    std::cout << "iouThreshold: " << iouThreshold << ", scoreThreshold: " << scoreThreshold << ", keepTopK: " << keepTopK <<std::endl;
+    bool isNormalized = false;
+    f.emplace_back("shareLocation", &shareLocation, nvinfer1::PluginFieldType::kUNKNOWN, 1);
+    f.emplace_back("backgroundLabelId", &backgroundLabelId, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("numClasses", &numClasses, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("keepTopK", &keepTopK, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("topK", &topK, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("iouThreshold", &iouThreshold, nvinfer1::PluginFieldType::kFLOAT32, 1);
+    f.emplace_back("scoreThreshold", &scoreThreshold, nvinfer1::PluginFieldType::kFLOAT32, 1);
+    f.emplace_back("isNormalized", &isNormalized, nvinfer1::PluginFieldType::kUNKNOWN, 1);
+
+    // Create plugin from registry
+    const auto mPluginRegistry = getPluginRegistry();
+    const auto pluginCreator
+        = mPluginRegistry->getPluginCreator(pluginName.c_str(), pluginVersion.c_str());
+
+    ASSERT(pluginCreator != nullptr, ErrorCode::kINVALID_VALUE);
+
+    nvinfer1::PluginFieldCollection fc;
+    fc.nbFields = f.size();
+    fc.fields = f.data();
+
+    auto plugin = pluginCreator->createPlugin(node.name().c_str(), &fc);
+
+    ASSERT(plugin != nullptr && "NonMaxSuppression plugin was not found in the plugin registry!",
+        ErrorCode::kUNSUPPORTED_NODE);
+
+    auto layer = ctx->network()->addPluginV2(&tensors[0], int(tensors.size()), *plugin);
+    nvinfer1::ITensor* indices = layer->getOutput(0);
+
+    RETURN_FIRST_OUTPUT(layer);
+}
+
 DEFINE_BUILTIN_OP_IMPORTER(Abs)
 {
     return unaryHelper(ctx, node, inputs.at(0), nvinfer1::UnaryOperation::kABS);
