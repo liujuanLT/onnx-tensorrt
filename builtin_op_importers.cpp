@@ -95,6 +95,102 @@ bool registerBuiltinOpImporter(std::string op, NodeImporter const& importer)
 }
 
 
+    NodeImportResult importBatchedNMS_TRT(                                                                                       
+        IImporterContext* ctx, ::ONNX_NAMESPACE::NodeProto const& node, std::vector<TensorOrWeights>& inputs);         
+    static const bool BatchedNMS_TRT_registered_builtin_op = registerBuiltinOpImporter("BatchedNMS_TRT", importBatchedNMS_TRT);                         
+    IGNORE_UNUSED_GLOBAL(BatchedNMS_TRT_registered_builtin_op);                                                                  
+    NodeImportResult importBatchedNMS_TRT(                                                                                       
+        IImporterContext* ctx, ::ONNX_NAMESPACE::NodeProto const& node, std::vector<TensorOrWeights>& inputs)
+// DEFINE_BUILTIN_OP_IMPORTER(BatchedNMS_TRT)
+{
+    bool onlynms = false;
+    std::vector<nvinfer1::ITensor*> tensors;
+    tensors.push_back(&convertToTensor(inputs.at(0), ctx)); // TODO
+    tensors.push_back(&convertToTensor(inputs.at(1), ctx));
+    // input[0].shape = [num_boxes, 4]
+    // input[1].shape = [num_boxes]
+
+    LOG_VERBOSE("call nms plugin: ");
+    // const std::string pluginName = "NonMaxSuppressionDynamic_TRT";
+    const std::string pluginName = "BatchedNMSDynamic_TRT";
+    const std::string pluginVersion = "1";
+
+    std::vector<nvinfer1::PluginField> f;
+    bool shareLocation = true;
+    int backgroundLabelId = -1;
+    int numClasses = 80;
+    int topK = 1000; //3652;  // tensors[1]->getDimensions().d[2]; // TODO
+    int keepTopK = 0;
+    float iouThreshold = 0.0f;
+    float scoreThreshold = 0.0f;
+    if (onlynms) {
+        keepTopK = 200;
+        iouThreshold = 0.5f;
+        scoreThreshold = 0.02f;
+    }
+    else {
+        keepTopK = static_cast<int*>(inputs.at(2).weights().values)[0];
+        iouThreshold = static_cast<float*>(inputs.at(3).weights().values)[0];
+        scoreThreshold = static_cast<float*>(inputs.at(4).weights().values)[0];
+    }
+
+    // origin
+    // int topK = tensors[1]->getDimensions().d[2];
+    // float iouThreshold = static_cast<float*>(inputs.at(2).weights().values)[0];
+    // float scoreThreshold = (node.input().size() > 3) ? static_cast<float*>(inputs.at(3).weights().values)[0] : 0.;
+    // int keepTopK = (node.input().size() > 4) ? static_cast<int*>(inputs.at(4).weights().values)[0] : tensors[1]->getDimensions().d[2];
+    
+    std::cout << "iouThreshold: " << iouThreshold << ", scoreThreshold: " << scoreThreshold << ", keepTopK: " << keepTopK <<std::endl;
+    bool isNormalized = false;
+    static constexpr    bool clipBoxes = false;
+    static constexpr    int scoreBits = 16;
+    f.emplace_back("shareLocation", &shareLocation, nvinfer1::PluginFieldType::kUNKNOWN, 1);
+    f.emplace_back("backgroundLabelId", &backgroundLabelId, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("numClasses", &numClasses, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("keepTopK", &keepTopK, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("topK", &topK, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("iouThreshold", &iouThreshold, nvinfer1::PluginFieldType::kFLOAT32, 1);
+    f.emplace_back("scoreThreshold", &scoreThreshold, nvinfer1::PluginFieldType::kFLOAT32, 1);
+    f.emplace_back("isNormalized", &isNormalized, nvinfer1::PluginFieldType::kUNKNOWN, 1);
+    f.emplace_back("clipBoxes", &clipBoxes, nvinfer1::PluginFieldType::kINT32, 1);
+    f.emplace_back("scoreBits", &scoreBits, nvinfer1::PluginFieldType::kINT32, 1);
+
+    // Create plugin from registry
+    const auto mPluginRegistry = getPluginRegistry();
+    const auto pluginCreator
+        = mPluginRegistry->getPluginCreator(pluginName.c_str(), pluginVersion.c_str());
+
+    ASSERT(pluginCreator != nullptr, ErrorCode::kINVALID_VALUE);
+
+    nvinfer1::PluginFieldCollection fc;
+    fc.nbFields = f.size();
+    fc.fields = f.data();
+
+    auto plugin = pluginCreator->createPlugin(node.name().c_str(), &fc);
+
+    ASSERT(plugin != nullptr && "NonMaxSuppression plugin was not found in the plugin registry!",
+        ErrorCode::kUNSUPPORTED_NODE);
+
+    auto layer = ctx->network()->addPluginV2(&tensors[0], int(tensors.size()), *plugin);
+    auto network = ctx->network();
+    // nvinfer1::ITensor* indices = layer->getOutput(0);
+    // nvinfer1::ITensor* num_detections = layer->getOutput(0);
+    // nvinfer1::ITensor* nmsed_boxes = layer->getOutput(1);
+    // nvinfer1::ITensor* nmsed_scores = layer->getOutput(2);
+    // nvinfer1::ITensor* nmsed_classes = layer->getOutput(3);
+    // layer->getOutput(0)->setName("num_detections");
+    // network->markOutput(*layer->getOutput(0));
+    // layer->getOutput(1)->setName("nmsed_boxes");
+    // network->markOutput(*layer->getOutput(1));
+    // layer->getOutput(2)->setName("nmsed_scores");
+    // network->markOutput(*layer->getOutput(2));
+    // layer->getOutput(3)->setName("nmsed_classes");
+    // network->markOutput(*layer->getOutput(3));
+
+
+    RETURN_ALL_OUTPUTS(layer);
+}
+
 DEFINE_BUILTIN_OP_IMPORTER(NonMaxSuppression)
 
                                                                                 
@@ -121,13 +217,10 @@ DEFINE_BUILTIN_OP_IMPORTER(NonMaxSuppression)
     bool shareLocation = true;
     int backgroundLabelId = -1;
     int numClasses = 1;
-    int topK = tensors[1]->getDimensions().d[2];
-    // float iouThreshold = static_cast<float*>(inputs.at(2).weights().values)[0];
-    // float scoreThreshold = (node.input().size() > 3) ? static_cast<float*>(inputs.at(3).weights().values)[0] : 0.;
-    // int keepTopK = (node.input().size() > 4) ? static_cast<int*>(inputs.at(4).weights().values)[0] : tensors[1]->getDimensions().d[2];
-    int keepTopK = (node.input().size() > 4) ? static_cast<int*>(inputs.at(2).weights().values)[0] : tensors[1]->getDimensions().d[2];
+    int topK = 3652;  // tensors[1]->getDimensions().d[2]; // TODO
+    int keepTopK = static_cast<int*>(inputs.at(2).weights().values)[0];
     float iouThreshold = static_cast<float*>(inputs.at(3).weights().values)[0];
-    float scoreThreshold = (node.input().size() > 3) ? static_cast<float*>(inputs.at(4).weights().values)[0] : 0.;
+    float scoreThreshold = static_cast<float*>(inputs.at(4).weights().values)[0];
     
     std::cout << "iouThreshold: " << iouThreshold << ", scoreThreshold: " << scoreThreshold << ", keepTopK: " << keepTopK <<std::endl;
     bool isNormalized = false;
@@ -161,6 +254,7 @@ DEFINE_BUILTIN_OP_IMPORTER(NonMaxSuppression)
 
     RETURN_FIRST_OUTPUT(layer);
 }
+
 
 DEFINE_BUILTIN_OP_IMPORTER(Abs)
 {
